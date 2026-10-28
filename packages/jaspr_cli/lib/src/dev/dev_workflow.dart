@@ -18,6 +18,7 @@ import 'client_manager.dart';
 import 'client_runner.dart';
 import 'css_runner.dart';
 import 'flutter_runner.dart';
+import 'reloaded_sources.dart';
 import 'server_runner.dart';
 import 'util.dart';
 
@@ -40,11 +41,7 @@ class DevWorkflow {
   final ExpressionCompilerService? ddcService;
   final Logger logger;
 
-  /// Modules changed since the last hot reload, keyed by module id.
-  ///
-  /// Accumulates across builds, so a build that starts while a reload is
-  /// still running does not discard the changes of the previous build.
-  final Map<String, Map<String, Object>> _reloadedSources;
+  final ReloadedSources _reloadedSources;
 
   late final ClientManager clients;
   late final ChromeRunner chrome;
@@ -147,30 +144,25 @@ class DevWorkflow {
         .listen(null);
   }
 
-  /// Removes the entries of [consumed] from [_reloadedSources], unless a
-  /// newer build has changed the module again in the meantime.
-  void _removeConsumedSources(Map<String, Map<String, Object>> consumed) {
-    consumed.forEach((module, source) {
-      if (identical(_reloadedSources[module], source)) {
-        _reloadedSources.remove(module);
-      }
-    });
-  }
-
   Future<void> reloadClients() async {
-    final consumedSources = Map.of(_reloadedSources);
+    final deliveredSources = _reloadedSources.snapshot();
     flutter?.reload();
     final cssFuture = css.reload();
     await server?.reload();
 
+    var allReloaded = true;
     for (final clientConnection in clients.connections) {
-      await clientConnection.performHotReload();
+      if (!await clientConnection.performHotReload()) {
+        allReloaded = false;
+      }
       await clientConnection.reassemble();
       if (project.requireMode != JasprMode.client) {
         await clientConnection.reloadHtml();
       }
     }
-    _removeConsumedSources(consumedSources);
+    if (allReloaded) {
+      _reloadedSources.removeDelivered(deliveredSources);
+    }
 
     final changedCssFiles = await cssFuture;
     if (changedCssFiles.isNotEmpty) {
@@ -184,7 +176,7 @@ class DevWorkflow {
   }
 
   Future<void> restartClients({bool incremental = false}) async {
-    final consumedSources = Map.of(_reloadedSources);
+    final deliveredSources = _reloadedSources.snapshot();
     final Future<List<String>> cssFuture;
     if (incremental) {
       flutter?.reload();
@@ -196,13 +188,18 @@ class DevWorkflow {
 
     await server?.reload();
 
+    var allRestarted = true;
     for (final clientConnection in clients.connections) {
-      await clientConnection.restart();
+      if (await clientConnection.restart() == null) {
+        allRestarted = false;
+      }
       if (project.requireMode != JasprMode.client) {
         await clientConnection.reloadHtml();
       }
     }
-    _removeConsumedSources(consumedSources);
+    if (allRestarted) {
+      _reloadedSources.removeDelivered(deliveredSources);
+    }
 
     final changedCssFiles = await cssFuture;
     if (changedCssFiles.isNotEmpty) {
@@ -216,7 +213,7 @@ class DevWorkflow {
   }
 
   Future<void> refreshClients() async {
-    final consumedSources = Map.of(_reloadedSources);
+    final deliveredSources = _reloadedSources.snapshot();
     flutter?.reload();
     final cssFuture = css.reload();
     await server?.reload();
@@ -227,10 +224,15 @@ class DevWorkflow {
       }
     }
 
+    var allRefreshed = true;
     for (final client in clients.connections) {
-      await client.refreshPage();
+      if (await client.refreshPage() == null) {
+        allRefreshed = false;
+      }
     }
-    _removeConsumedSources(consumedSources);
+    if (allRefreshed) {
+      _reloadedSources.removeDelivered(deliveredSources);
+    }
   }
 
   /// Ensures DWDS is operating in Chrome DevTools Protocol (CDP) mode.
@@ -275,7 +277,7 @@ class DevWorkflow {
     }
 
     const target = 'web';
-    final reloadedSources = <String, Map<String, Object>>{};
+    final reloadedSources = ReloadedSources();
     var pipeline = const Pipeline();
 
     // Only provide relevant build results as a broadcast stream.
@@ -284,11 +286,11 @@ class DevWorkflow {
         results.changedAssets?.forEach((uri) {
           if (uri.path.endsWith('.ddc.js')) {
             final libraryId = ddcUriToLibraryId(uri);
-            reloadedSources[libraryId] = {
+            reloadedSources.add(libraryId, {
               'src': ddcUriToSourceUrl('', target, uri),
               'module': libraryId,
               'libraries': [libraryId],
-            };
+            });
           }
         });
       }
@@ -445,7 +447,7 @@ class DevWorkflow {
       cascade = cascade.add((Request req) {
         if (req.url.path == 'reloaded_sources.json') {
           return Response.ok(
-            jsonEncode(reloadedSources.values.toList()),
+            jsonEncode(reloadedSources.toJson()),
             headers: {'content-type': 'application/json'},
           );
         }
