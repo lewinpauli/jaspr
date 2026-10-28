@@ -40,6 +40,12 @@ class DevWorkflow {
   final ExpressionCompilerService? ddcService;
   final Logger logger;
 
+  /// Modules changed since the last hot reload, keyed by module id.
+  ///
+  /// Accumulates across builds, so a build that starts while a reload is
+  /// still running does not discard the changes of the previous build.
+  final Map<String, Map<String, Object>> _reloadedSources;
+
   late final ClientManager clients;
   late final ChromeRunner chrome;
 
@@ -90,6 +96,7 @@ class DevWorkflow {
     required this._useDwdsWebSocketConnection,
     required this._toolConfiguration,
     required this._assetReader,
+    required this._reloadedSources,
     required this.logger,
     this.ddcService,
   }) {
@@ -140,7 +147,18 @@ class DevWorkflow {
         .listen(null);
   }
 
+  /// Removes the entries of [consumed] from [_reloadedSources], unless a
+  /// newer build has changed the module again in the meantime.
+  void _removeConsumedSources(Map<String, Map<String, Object>> consumed) {
+    consumed.forEach((module, source) {
+      if (identical(_reloadedSources[module], source)) {
+        _reloadedSources.remove(module);
+      }
+    });
+  }
+
   Future<void> reloadClients() async {
+    final consumedSources = Map.of(_reloadedSources);
     flutter?.reload();
     final cssFuture = css.reload();
     await server?.reload();
@@ -152,6 +170,7 @@ class DevWorkflow {
         await clientConnection.reloadHtml();
       }
     }
+    _removeConsumedSources(consumedSources);
 
     final changedCssFiles = await cssFuture;
     if (changedCssFiles.isNotEmpty) {
@@ -165,6 +184,7 @@ class DevWorkflow {
   }
 
   Future<void> restartClients({bool incremental = false}) async {
+    final consumedSources = Map.of(_reloadedSources);
     final Future<List<String>> cssFuture;
     if (incremental) {
       flutter?.reload();
@@ -182,6 +202,7 @@ class DevWorkflow {
         await clientConnection.reloadHtml();
       }
     }
+    _removeConsumedSources(consumedSources);
 
     final changedCssFiles = await cssFuture;
     if (changedCssFiles.isNotEmpty) {
@@ -195,6 +216,7 @@ class DevWorkflow {
   }
 
   Future<void> refreshClients() async {
+    final consumedSources = Map.of(_reloadedSources);
     flutter?.reload();
     final cssFuture = css.reload();
     await server?.reload();
@@ -208,6 +230,7 @@ class DevWorkflow {
     for (final client in clients.connections) {
       await client.refreshPage();
     }
+    _removeConsumedSources(consumedSources);
   }
 
   /// Ensures DWDS is operating in Chrome DevTools Protocol (CDP) mode.
@@ -252,22 +275,20 @@ class DevWorkflow {
     }
 
     const target = 'web';
-    final reloadedSources = <Map<String, Object>>[];
+    final reloadedSources = <String, Map<String, Object>>{};
     var pipeline = const Pipeline();
 
     // Only provide relevant build results as a broadcast stream.
     final filteredBuildResults = clientRunner.buildResults.asyncMap<BuildResult>((results) {
       if (moduleFormat == 'ddc') {
-        reloadedSources.clear();
         results.changedAssets?.forEach((uri) {
           if (uri.path.endsWith('.ddc.js')) {
             final libraryId = ddcUriToLibraryId(uri);
-            final reloadedSource = {
+            reloadedSources[libraryId] = {
               'src': ddcUriToSourceUrl('', target, uri),
               'module': libraryId,
               'libraries': [libraryId],
             };
-            reloadedSources.add(reloadedSource);
           }
         });
       }
@@ -326,6 +347,9 @@ class DevWorkflow {
       timer.cancel();
       await initialBuildSub.cancel();
     }
+
+    // The initial page load already contains everything the initial build produced.
+    reloadedSources.clear();
 
     if (initialResult.status == BuildStatus.failed) {
       logger.write(
@@ -420,7 +444,10 @@ class DevWorkflow {
     if (moduleFormat == 'ddc') {
       cascade = cascade.add((Request req) {
         if (req.url.path == 'reloaded_sources.json') {
-          return Response.ok(jsonEncode(reloadedSources), headers: {'content-type': 'application/json'});
+          return Response.ok(
+            jsonEncode(reloadedSources.values.toList()),
+            headers: {'content-type': 'application/json'},
+          );
         }
         return Response.notFound('');
       });
@@ -450,6 +477,7 @@ class DevWorkflow {
       useDwdsWebSocketConnection: useDwdsWebSocketConnection,
       toolConfiguration: toolConfiguration,
       assetReader: assetReader,
+      reloadedSources: reloadedSources,
       ddcService: ddcService,
       logger: logger,
     );
