@@ -8,6 +8,7 @@ import 'package:vm_service/vm_service.dart' as vm;
 import 'package:vm_service/vm_service_io.dart';
 
 import '../logging.dart';
+import 'client_call_guard.dart';
 import 'dev_workflow.dart';
 
 class ClientManager {
@@ -83,6 +84,18 @@ class ClientConnection {
   String? devToolsUri;
 
   vm.VmService? get vmService => _debugConnection?.vmService;
+
+  late final _callGuard = ClientCallGuard(
+    onUnresponsive: () => manager.workflow.logger.write(
+      'Client ${appConnection.request.appId} did not respond, skipping it until it responds again.',
+      tag: Tag.client,
+      level: Level.warning,
+    ),
+    onResponsive: () => manager.workflow.logger.write(
+      'Client ${appConnection.request.appId} is responding again, it may show outdated content until the next reload.',
+      tag: Tag.client,
+    ),
+  );
 
   void start() async {
     final appId = appConnection.request.appId;
@@ -173,14 +186,20 @@ class ClientConnection {
     }
   }
 
-  Future<vm.Response?> restart() async {
+  Future<vm.Response?> restart() => _callGuard.run(() async {
     final restartMethod = _registeredMethodsForService['hotRestart'] ?? 'hotRestart';
     final response = await vmService?.callServiceExtension(restartMethod);
     return response;
-  }
+  });
 
   /// Performs a hot reload and returns whether it succeeded.
+  ///
+  /// Returns `false` if the client didn't respond in time.
   Future<bool> performHotReload() async {
+    return await _callGuard.run(_performHotReload) ?? false;
+  }
+
+  Future<bool> _performHotReload() async {
     final vmService = this.vmService;
     if (vmService == null) {
       manager.workflow.logger.write(
@@ -216,7 +235,7 @@ class ClientConnection {
     return false;
   }
 
-  Future<vm.Response?> reloadStylesheets(List<String> urls) async {
+  Future<vm.Response?> reloadStylesheets(List<String> urls) => _callGuard.run(() async {
     final reloadMethod = _registeredMethodsForService['ext.jaspr.reload_stylesheets'] ?? 'ext.jaspr.reload_stylesheets';
     for (var i = 0; i < 5; i++) {
       try {
@@ -230,9 +249,9 @@ class ClientConnection {
       }
     }
     return null;
-  }
+  });
 
-  Future<vm.Response?> reassemble() async {
+  Future<vm.Response?> reassemble() => _callGuard.run(() async {
     final reassembleMethod = _registeredMethodsForService['ext.jaspr.reassemble'] ?? 'ext.jaspr.reassemble';
     for (var i = 0; i < 5; i++) {
       try {
@@ -243,9 +262,9 @@ class ClientConnection {
       }
     }
     return null;
-  }
+  });
 
-  Future<vm.Response?> reloadHtml([String? path]) async {
+  Future<vm.Response?> reloadHtml([String? path]) => _callGuard.run(() async {
     final reloadMethod = _registeredMethodsForService['ext.jaspr.reload_html'] ?? 'ext.jaspr.reload_html';
     final args = path != null ? {'path': path} : <String, String>{};
     for (var i = 0; i < 5; i++) {
@@ -257,9 +276,9 @@ class ClientConnection {
       }
     }
     return null;
-  }
+  });
 
-  Future<vm.Response?> refreshPage() async {
+  Future<vm.Response?> refreshPage() => _callGuard.run(() async {
     final reloadMethod =
         _registeredMethodsForService['fullReload'] ?? _registeredMethodsForService['ext.dwds.reload'] ?? 'fullReload';
     try {
@@ -268,7 +287,7 @@ class ClientConnection {
     } catch (_) {
       return null;
     }
-  }
+  });
 
   int? _buildProgressEventId;
   var _progressEventId = 0;
