@@ -3,6 +3,7 @@
 - Fixed issue with hot-reload in client mode.
 - Fixed key shortcuts in `jaspr serve` not working on Windows.
 - Fixed hot-reload losing changes when a new build starts before the previous reload has finished.
+- Fixed styles hot-reload recompiling all dependencies on every change on Windows.
 
 ## 0.24.0-beta.0
 
