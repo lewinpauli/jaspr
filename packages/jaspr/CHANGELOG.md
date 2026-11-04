@@ -1,6 +1,7 @@
 ## Unreleased 0.24.0-beta.1
 
 - Fixed issue with hot-reload in client mode.
+- Fixed `jaspr serve` blocking all following reloads when a connected browser stops responding (e.g. a phone with the screen turned off).
 
 ## 0.24.0-beta.0
 
