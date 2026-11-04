@@ -144,6 +144,7 @@ class DevWorkflow {
         .listen(null);
   }
 
+  /// Hot reloads all connected clients, then reloads any changed stylesheets.
   Future<void> reloadClients() async {
     final deliveredSources = _reloadedSources.snapshot();
     flutter?.reload();
@@ -151,30 +152,30 @@ class DevWorkflow {
     await server?.reload();
 
     var allReloaded = true;
-    for (final clientConnection in clients.connections) {
-      if (!await clientConnection.performHotReload()) {
-        allReloaded = false;
+    await clients.forEachConnection('Hot reload', (clientConnection) async {
+      // Also counts as failed when the hot reload throws, so the changes are kept for the next reload.
+      var reloaded = false;
+      try {
+        reloaded = await clientConnection.performHotReload();
+      } finally {
+        if (!reloaded) allReloaded = false;
       }
       await clientConnection.reassemble();
       if (project.requireMode != JasprMode.client) {
         await clientConnection.reloadHtml();
       }
-    }
+    });
     if (allReloaded) {
       _reloadedSources.removeDelivered(deliveredSources);
     }
 
-    final changedCssFiles = await cssFuture;
-    if (changedCssFiles.isNotEmpty) {
-      for (final clientConnection in clients.connections) {
-        await clientConnection.reloadStylesheets(changedCssFiles);
-      }
-      for (final file in changedCssFiles) {
-        logger.write('Reloaded $file', tag: Tag.css);
-      }
-    }
+    await _reloadStylesheets(cssFuture);
   }
 
+  /// Hot restarts all connected clients, then reloads any changed stylesheets.
+  ///
+  /// If [incremental] is `true`, the Flutter and CSS runners are only
+  /// reloaded instead of fully restarted.
   Future<void> restartClients({bool incremental = false}) async {
     final deliveredSources = _reloadedSources.snapshot();
     final Future<List<String>> cssFuture;
@@ -189,29 +190,25 @@ class DevWorkflow {
     await server?.reload();
 
     var allRestarted = true;
-    for (final clientConnection in clients.connections) {
-      if (await clientConnection.restart() == null) {
-        allRestarted = false;
+    await clients.forEachConnection('Hot restart', (clientConnection) async {
+      var restarted = false;
+      try {
+        restarted = await clientConnection.restart() != null;
+      } finally {
+        if (!restarted) allRestarted = false;
       }
       if (project.requireMode != JasprMode.client) {
         await clientConnection.reloadHtml();
       }
-    }
+    });
     if (allRestarted) {
       _reloadedSources.removeDelivered(deliveredSources);
     }
 
-    final changedCssFiles = await cssFuture;
-    if (changedCssFiles.isNotEmpty) {
-      for (final clientConnection in clients.connections) {
-        await clientConnection.reloadStylesheets(changedCssFiles);
-      }
-      for (final file in changedCssFiles) {
-        logger.write('Reloaded $file', tag: Tag.css);
-      }
-    }
+    await _reloadStylesheets(cssFuture);
   }
 
+  /// Fully reloads the page in all connected clients.
   Future<void> refreshClients() async {
     final deliveredSources = _reloadedSources.snapshot();
     flutter?.reload();
@@ -225,13 +222,28 @@ class DevWorkflow {
     }
 
     var allRefreshed = true;
-    for (final client in clients.connections) {
+    await clients.forEachConnection('Refresh', (client) async {
       if (await client.refreshPage() == null) {
         allRefreshed = false;
       }
-    }
+    });
     if (allRefreshed) {
       _reloadedSources.removeDelivered(deliveredSources);
+    }
+  }
+
+  /// Waits for [cssFuture] and, if any stylesheets changed,
+  /// reloads them in all connected clients.
+  Future<void> _reloadStylesheets(Future<List<String>> cssFuture) async {
+    final changedCssFiles = await cssFuture;
+    if (changedCssFiles.isEmpty) return;
+
+    await clients.forEachConnection(
+      'Stylesheet reload',
+      (clientConnection) => clientConnection.reloadStylesheets(changedCssFiles),
+    );
+    for (final file in changedCssFiles) {
+      logger.write('Reloaded $file', tag: Tag.css);
     }
   }
 
