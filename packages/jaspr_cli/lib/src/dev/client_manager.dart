@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dwds/data/build_result.dart';
 import 'package:dwds/dwds.dart';
+import 'package:meta/meta.dart';
 import 'package:vm_service/vm_service.dart' as vm;
 import 'package:vm_service/vm_service_io.dart';
 
@@ -17,6 +18,12 @@ class ClientManager {
   final DevWorkflow workflow;
   final Map<String, ClientConnection> _clientConnections = {};
   final StreamController<Map<String, Object?>> _clientEvents = StreamController.broadcast();
+
+  /// How long to wait for a single client call before skipping the client.
+  ///
+  /// Only applies to clients that connect after it is changed.
+  @visibleForTesting
+  Duration callTimeout = const Duration(seconds: 10);
 
   Stream<Map<String, Object?>> get clientEvents => _clientEvents.stream;
 
@@ -112,14 +119,15 @@ class ClientConnection {
   vm.VmService? get vmService => _debugConnection?.vmService;
 
   late final _callGuard = ClientCallGuard(
+    timeout: manager.callTimeout,
     onUnresponsive: () => manager.workflow.logger.write(
       'Client ${appConnection.request.appId} did not respond, skipping it until it responds again.',
-      tag: Tag.client,
-      level: Level.warning,
+      tag: .client,
+      level: .warning,
     ),
     onResponsive: () => manager.workflow.logger.write(
       'Client ${appConnection.request.appId} is responding again, it may show outdated content until the next reload.',
-      tag: Tag.client,
+      tag: .client,
     ),
   );
 

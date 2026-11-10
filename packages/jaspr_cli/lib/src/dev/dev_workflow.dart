@@ -153,12 +153,10 @@ class DevWorkflow {
 
     var allReloaded = true;
     await clients.forEachConnection('Hot reload', (clientConnection) async {
-      // Also counts as failed when the hot reload throws, so the changes are kept for the next reload.
-      var reloaded = false;
-      try {
-        reloaded = await clientConnection.performHotReload();
-      } finally {
-        if (!reloaded) allReloaded = false;
+      if (!await clientConnection.performHotReload()) {
+        allReloaded = false;
+        // Skip reassemble and html reload if client hot-reload fails.
+        return;
       }
       await clientConnection.reassemble();
       if (project.requireMode != JasprMode.client) {
@@ -191,11 +189,10 @@ class DevWorkflow {
 
     var allRestarted = true;
     await clients.forEachConnection('Hot restart', (clientConnection) async {
-      var restarted = false;
-      try {
-        restarted = await clientConnection.restart() != null;
-      } finally {
-        if (!restarted) allRestarted = false;
+      if (await clientConnection.restart() == null) {
+        allRestarted = false;
+        // Skip html reload if client restart fails.
+        return;
       }
       if (project.requireMode != JasprMode.client) {
         await clientConnection.reloadHtml();
